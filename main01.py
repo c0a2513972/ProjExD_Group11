@@ -64,6 +64,20 @@ def load_image_with_fallback(filenames):
 # ==================== HP管理クラス ====================
 class HpManager:
     """HP/無敵時間/描画/フラッシュ演出を統合管理するクラス"""
+# プレイヤー（こうかとん: 3.png）
+class Player:
+    def __init__(self):
+        self.w = 65
+        self.h = 65
+        self.x = WIDTH // 2 - self.w // 2
+        self.y = HEIGHT - 115
+        self.normal_speed = 7.5
+        self.boost_speed = 14.0
+        self.rect = pg.Rect(self.x, self.y, self.w, self.h)
+        self.facing_right = True
+        self.invincible_timer = 0
+        self.speed_timer = 0
+        self.small_timer = 0
 
     def __init__(self, max_hp: int, damage: int, invincible_frame: int) -> None:
         self.max_hp = max_hp
@@ -177,8 +191,18 @@ class Player:
 
     def update(self, shift_pressed: bool) -> None:
         """キー入力に応じて移動・ジャンプ・しゃがみ状態を更新する"""
+    def update(self, shift_pressed):
+        if self.invincible_timer > 0:
+            self.invincible_timer -= 1
+        if self.speed_timer > 0:
+            self.speed_timer -= 1
+        if self.small_timer > 0:
+            self.small_timer -= 1
+
         keys = pg.key.get_pressed()
         spd = self.boost_speed if shift_pressed else self.normal_speed
+        if self.speed_timer > 0:
+            spd += 5
 
         # 左右移動
         if keys[pg.K_a] or keys[pg.K_LEFT]:
@@ -189,6 +213,13 @@ class Player:
             self.facing_right = True
 
         self.x = max(0, min(self.x, WIDTH - self.w))
+        self.rect.x = self.x
+        if self.small_timer > 0:
+            self.rect.width = 40
+            self.rect.height = 40
+        else:
+            self.rect.width = 65
+            self.rect.height = 65
 
         # しゃがみ処理 (Sキー / ↓キー)
         if (keys[pg.K_s] or keys[pg.K_DOWN]) and not self.is_jumping:
@@ -230,6 +261,21 @@ class Player:
         else:
             target_surf.blit(img, self.rect)
 
+        if self.small_timer > 0:
+            small_img = pg.transform.scale(
+                img,
+                (40, 40)
+            )
+            target_surf.blit(
+                small_img,
+                (self.rect.x, self.rect.y)
+            )
+        else:
+            target_surf.blit(
+                img,
+                self.rect
+            )
+
 
 # ----------------------------------------------------
 # 杭打ち機の壁クラス
@@ -254,6 +300,12 @@ class HammerWall:
         self.warning_target_y: float = 15.0
         self.hold_timer: int = 25
         self.ground_hold_timer: int = 20
+        # ステート制御
+        self.state = "warning"
+        self.warning_speed = 3.2  # 上から顔を出すスピードを素早く（0.6 → 3.2）
+        self.warning_target_y = 15
+        self.hold_timer = 25  # 「ごごごご…」のタメ時間はそのままキープ
+        self.ground_hold_timer = 20
 
         self.update_rects()
 
@@ -400,6 +452,57 @@ class HammerWall:
         return False
 
 
+#アイテムシステム
+class Item:
+    def __init__(self):
+        self.size = 30  # アイテムの大きさ
+        self.x = random.randint(50, WIDTH - 50)   # 画面上部のランダムな位置に生成
+        self.y = -30
+        self.speed = 4   # 落下速度
+        self.kind = random.choice(
+            ["hp", "invincible", "speed", "small"]
+        )
+        img_files = {
+            "hp": "hp.png",
+            "invincible": "invincible.png",
+            "speed": "speed.png",
+            "small": "small.png"
+        }
+
+        raw_img = load_image_with_fallback(
+            [img_files[self.kind]]
+        )
+
+        if raw_img:
+            self.image = pg.transform.scale(
+                raw_img.convert_alpha(),
+                (self.size, self.size)
+            )
+        else:
+            self.image = None
+        # アイテムの種類をランダムに決定
+        # hp:体力回復
+        # invincible:無敵
+        # speed:移動速度上昇
+        # small:こうかとん縮小
+        self.rect = pg.Rect(
+            self.x,
+            self.y,
+            self.size,
+            self.size
+        )
+    def update(self):
+        self.y += self.speed
+        self.rect.y = self.y
+    
+    def draw(self, surf):
+        if self.image:
+            surf.blit(
+                self.image,
+                self.rect
+            )
+
+# 背景描画
 def draw_background(target_surf, bg_img):
     if bg_img:
         target_surf.blit(bg_img, (0, 0))
@@ -507,7 +610,11 @@ def main():
         # 2. プレイ画面
         elif state == "GAME":
             player.update(shift_pressed)
-            hp_manager.update()
+            item_timer += 1
+
+            if item_timer >= 300:
+                items.append(Item())
+                item_timer = 0
 
             if wall.update():
                 score += 1
@@ -566,6 +673,48 @@ def main():
             canvas.blit(go_surf, go_surf.get_rect(center=(WIDTH // 2, 220)))
             canvas.blit(sc_surf, sc_surf.get_rect(center=(WIDTH // 2, 300)))
             canvas.blit(rt_surf, rt_surf.get_rect(center=(WIDTH // 2, 370)))
+            for item in items[:]:
+                item.update()
+
+                if item.rect.colliderect(player.rect):
+                    if item.kind == "hp":
+                        hp = min(hp + 10, 100)
+                    elif item.kind == "invincible":
+                        player.invincible_timer = 180
+                    elif item.kind == "speed":
+                        player.speed_timer = 300
+                    elif item.kind == "small":
+                        player.small_timer = 300
+                    items.remove(item)
+                elif item.y > HEIGHT:
+                    items.remove(item)
+
+            if wall.collide(player.rect):
+                if player.invincible_timer <= 0:
+                    game_over = True
+
+        draw_background(canvas, bg_img)
+        wall.draw(canvas)
+        for item in items:
+            item.draw(canvas)
+        player.draw(canvas)
+
+        # スコアのみ表示
+        text_color = (30, 30, 30) if bg_img else (255, 255, 255)
+        score_surf = font.render(
+            f"Score: {score}",
+            True,
+            text_color
+            )
+        canvas.blit(score_surf, (20, 20))
+
+        # HP表示
+        hp_surf = font.render(
+            f"HP: {hp}",
+            True,
+            (255, 100, 100)
+            )
+        canvas.blit(hp_surf, (20, 60))
 
         # ---------------- 画面振動 ----------------
         offset_x, offset_y = 0, 0
